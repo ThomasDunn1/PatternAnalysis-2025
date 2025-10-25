@@ -1,0 +1,35 @@
+# Python cache & builds
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Virtual envs
+.venv/
+venv/
+
+# Notebooks & checkpoints
+.ipynb_checkpoints/
+
+# Logs, runs, checkpoints, predictions
+runs/
+*.ckpt
+*.pt
+*.pth
+predictions*.csv
+
+# Data – no datasets or derived artifacts committed
+data/raw/
+data/splits/
+data/processed/
+
+# OS/editor junk
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# IDE
+.vscode/
+.idea/
