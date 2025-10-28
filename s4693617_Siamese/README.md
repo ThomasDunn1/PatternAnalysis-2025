@@ -43,8 +43,5 @@ Generated from visualise_batch.py:
 
 
 ## Next Steps
-1. P×K Sampler (metric-learning batches): 
-    - Add a class-balanced PKSampler to form batches with P classes × K images per class (helps triplet mining).
-    - Smoke test: create a loader using PKSampler and verify the first batch has size P*K and includes both classes when available.
 1. Add modules.py (pretrained backbone + projection head).
 2. Implement metric loss & minimal train loop; then validation/plots/checkpoints.
