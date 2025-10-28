@@ -10,7 +10,8 @@ This initial commit sets up the environment, directories, ignore rules, and depe
 - ✅ `requirements.txt` with core libs
 - ✅ Data splits (`make_splits.py`)
 - ✅ Dataset/dataloader (`dataset.py`)
-- ☐ Model modules (`modules.py`)
+- ✅ Model modules (`modules.py`)
+- ✅ Losses modules (`losses.py`)
 - ☐ Training script (`train.py`)
 - ☐ Prediction example (`predict.py`)
 
@@ -43,9 +44,7 @@ Generated from visualise_batch.py:
 
 
 ## Next Steps
-1. Triplet Loss + Semi-hard Negative Mining
-    - Implement a TripletLoss class with margin ≈ 0.3 and Euclidean distance.
-    - Add semi-hard mining: choose negatives further than positives but within the margin.
-    - Verify numerical stability on a small synthetic batch (PKSampler + SiameseEncoder).
-    - Prepare for integration into train.py as the main loss.
-2. Implement metric loss & minimal train loop; then validation/plots/checkpoints.
+Minimal Training Loop (train.py)
+- Wire DataLoader (+ PKSampler) → SiameseEncoder → TripletLoss → AdamW.
+- Add simple CLI args, optional AMP, and write a small JSON history (loss per epoch).
+- Sanity-run 1 epoch on a small subset to confirm stability and GPU utilization.
