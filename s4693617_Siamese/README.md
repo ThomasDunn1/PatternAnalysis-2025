@@ -44,7 +44,15 @@ Generated from visualise_batch.py:
 
 
 ## Next Steps
-Checkpointing & Best-Model Selection
-- Save best.pt whenever val_auc improves; persist config (backbone, embed_dim, image_size).
-- At end, reload best.pt and run a final eval on the val fold (placeholder for a future test set).
-- Write a test_stats.txt with metrics and the chosen threshold.
+Immediate: 
+
+Prediction (predict.py)
+- Load best.pt, rebuild class prototypes from a support CSV (e.g., the val fold), and score any CSV (images only or with labels).
+- Output predictions.csv with image_path,score,pred[,label]; add optional TTA (flip/rotate) averaging.
+- Provide a minimal CLI with --ckpt --support_csv --pred_csv --out_csv [--tta].  
+
+
+Future:
+- Fold Runner: --fold support and script to train/evaluate all 5 folds, write a metrics table.
+- Unfreeze & Schedules: staged fine-tune and LR scheduling to push accuracy toward ~0.8.
+- TTA / Ensembling (optional): small boosts for stability and final score.

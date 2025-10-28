@@ -12,7 +12,10 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from sklearn.metrics import roc_auc_score, average_precision_score, precision_recall_curve, roc_curve, accuracy_score
 import matplotlib.pyplot as plt
+from pathlib import Path
 
+import json
+from dataclasses import asdict
 
 @dataclass
 class EvalResult:
@@ -24,16 +27,18 @@ class EvalResult:
 
 
 @torch.no_grad()
-def embed_dataset(model, loader: DataLoader, device: torch.device) -> Tuple[np.ndarray, np.ndarray]:
-    """Run model over loader and collect (embeddings, labels)."""
+def embed_dataset(model, loader: DataLoader, device: torch.device, progress_every: int = 50):
     model.eval()
     embs, labs = [], []
-    for x, y, _ in loader:
+    for i, (x, y, _) in enumerate(loader):
         x = x.to(device, non_blocking=True)
-        z = model(x)                      # [B, D] already L2-normalized
+        z = model(x)
         embs.append(z.detach().cpu().numpy())
         labs.append(y.detach().cpu().numpy())
-    return np.concatenate(embs, axis=0), np.concatenate(labs, axis=0)
+        if progress_every and (i + 1) % progress_every == 0:
+            print(f"[val] embedded {i+1} batches")
+    import numpy as _np
+    return _np.concatenate(embs, axis=0), _np.concatenate(labs, axis=0)
 
 
 def compute_prototypes(emb: np.ndarray, labels: np.ndarray) -> Dict[int, np.ndarray]:
@@ -100,38 +105,60 @@ def evaluate_prototypes(
 
 
 def plot_training_curves(history: dict, out_png: Path):
-    """Plot train/val curves from history dict."""
-    out_png = Path(out_png)
-    plt.figure(figsize=(6.5, 4.0))
-    if "train_loss" in history:
-        plt.plot(history["epoch"], history["train_loss"], label="train loss")
-    if "val_auc" in history:
-        plt.plot(history["epoch"], history["val_auc"], label="val AUC")
-    if "val_ap" in history:
-        plt.plot(history["epoch"], history["val_ap"], label="val AP")
-    plt.xlabel("epoch")
-    plt.legend()
-    plt.tight_layout()
-    out_png.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(out_png, dpi=160)
-    plt.close()
+    out_png = Path(out_png); out_png.parent.mkdir(parents=True, exist_ok=True)
+    epochs = history.get("epoch", [])
+    n = len(epochs)
+
+    plt.figure(figsize=(6.5, 4.0), facecolor="white")
+
+    def style_for_series():
+        # With 1–2 epochs, show markers so it isn't an invisible tiny line.
+        return "o-" if n <= 2 else "-"
+
+    if "train_loss" in history and len(history["train_loss"]) > 0:
+        plt.plot(epochs, history["train_loss"], style_for_series(), label="train loss")
+    if "val_auc" in history and len(history["val_auc"]) > 0:
+        plt.plot(epochs, history["val_auc"], style_for_series(), label="val AUC")
+    if "val_ap" in history and len(history["val_ap"]) > 0:
+        plt.plot(epochs, history["val_ap"], style_for_series(), label="val AP")
+
+    plt.xlabel("epoch"); plt.legend(); plt.grid(alpha=0.3)
+    plt.tight_layout(); plt.savefig(out_png, dpi=160, facecolor="white"); plt.close()
 
 
-def plot_val_curves(y_true: np.ndarray, y_score: np.ndarray, out_dir: Path):
-    """Save ROC and PR curves for the current evaluation."""
+def plot_val_curves(y_true, y_score, out_dir: Path, title_suffix: str = ""):
     out_dir = Path(out_dir); out_dir.mkdir(parents=True, exist_ok=True)
 
-    # ROC
+    # ROC with legend
+    auc = roc_auc_score(y_true, y_score)
     fpr, tpr, _ = roc_curve(y_true, y_score)
-    plt.figure(figsize=(5.0, 4.0))
-    plt.plot(fpr, tpr, lw=2)
-    plt.plot([0, 1], [0, 1], ls="--")
-    plt.xlabel("FPR"); plt.ylabel("TPR"); plt.title("ROC")
-    plt.tight_layout(); plt.savefig(out_dir / "val_roc.png", dpi=160); plt.close()
+    plt.figure(figsize=(5.0, 4.0), facecolor="white")
+    plt.plot(fpr, tpr, lw=2, label=f"Model (AUC={auc:.3f})")
+    plt.plot([0, 1], [0, 1], ls="--", label="Chance")
+    plt.xlabel("FPR"); plt.ylabel("TPR"); plt.title(f"ROC{title_suffix}")
+    plt.legend(loc="lower right"); plt.grid(alpha=0.3)
+    plt.tight_layout(); plt.savefig(out_dir / "val_roc.png", dpi=160, facecolor="white"); plt.close()
 
-    # PR
+    # PR with legend
+    ap = average_precision_score(y_true, y_score)
     prec, rec, _ = precision_recall_curve(y_true, y_score)
-    plt.figure(figsize=(5.0, 4.0))
-    plt.plot(rec, prec, lw=2)
-    plt.xlabel("Recall"); plt.ylabel("Precision"); plt.title("PR")
-    plt.tight_layout(); plt.savefig(out_dir / "val_pr.png", dpi=160); plt.close()
+    plt.figure(figsize=(5.0, 4.0), facecolor="white")
+    plt.plot(rec, prec, lw=2, label=f"Model (AP={ap:.3f})")
+    plt.xlabel("Recall"); plt.ylabel("Precision"); plt.title(f"PR{title_suffix}")
+    plt.legend(loc="lower left"); plt.grid(alpha=0.3)
+    plt.tight_layout(); plt.savefig(out_dir / "val_pr.png", dpi=160, facecolor="white"); plt.close()
+
+
+def save_config(cfg_obj, path):
+    """Save a dataclass or dict to JSON."""
+    path = Path(path)
+    data = asdict(cfg_obj) if hasattr(cfg_obj, "__dataclass_fields__") else dict(cfg_obj)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w") as f:
+        json.dump(data, f, indent=2)
+
+
+def load_config(path) -> dict:
+    path = Path(path)
+    with open(path, "r") as f:
+        return json.load(f)

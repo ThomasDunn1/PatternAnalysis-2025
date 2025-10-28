@@ -4,7 +4,7 @@
 from __future__ import annotations
 from pathlib import Path
 from typing import Tuple, List, Dict
-import numpy as np
+import math, numpy as np
 from torch.utils.data import Sampler
 
 import pandas as pd
@@ -97,71 +97,54 @@ class ISIC2020Dataset(Dataset):
 
 class PKSampler(Sampler[List[int]]):
     """
-    P×K sampler: each batch contains P classes, K images per class.
-    For binary classification, it tries to include both 0 and 1 where possible
-    and oversamples the minority class via wrap-around.
-
-    Args
-    ----
-    labels : List[int]
-        Per-example labels (0/1) aligned with the dataset indexing.
-    batch_p : int
-        Number of distinct classes per batch (>=2 for binary).
-    batch_k : int
-        Number of samples per class in each batch.
-    drop_last : bool
-        If True, drop the last incomplete batch.
+    Finite-epoch P×K sampler: each epoch yields ~N // (P*K) batches (drop_last=True)
+    or ceil(N/(P*K)) when drop_last=False. Uses wrap-around within classes to keep
+    batches full, but limits the number of batches per epoch to 'steps'.
     """
     def __init__(self, labels: List[int], batch_p: int = 8, batch_k: int = 4, drop_last: bool = True):
         self.labels = np.asarray(labels, dtype=int)
         self.P = int(batch_p)
         self.K = int(batch_k)
-        self.drop_last = drop_last
+        self.drop_last = bool(drop_last)
 
-        # group indices by class
         self.idxs_by_class: Dict[int, np.ndarray] = {
-            c: np.where(self.labels == c)[0] for c in np.unique(self.labels)
+            int(c): np.where(self.labels == c)[0] for c in np.unique(self.labels)
         }
-        # sanity
         for c, arr in self.idxs_by_class.items():
-            if len(arr) == 0:
+            if arr.size == 0:
                 raise ValueError(f"class {c} has no samples; cannot build P×K batches")
+
+        self._n = int(self.labels.size)
+        self._bsz = self.P * self.K
+        self._steps = (self._n // self._bsz) if self.drop_last else int(math.ceil(self._n / self._bsz))
+
+    def __len__(self) -> int:
+        return self._steps
 
     def __iter__(self):
         rng = np.random.default_rng()
-        # shuffle class members and set pointers
-        idxs_by_class = {c: rng.permutation(v) for c, v in self.idxs_by_class.items()}
-        ptrs = {c: 0 for c in idxs_by_class}
-        all_classes = list(idxs_by_class.keys())
+        # shuffle per-class pools and init pointers each epoch
+        pools = {c: rng.permutation(v.copy()) for c, v in self.idxs_by_class.items()}
+        ptrs  = {c: 0 for c in pools}
+        classes = list(pools.keys())
 
-        batch: List[int] = []
-        while True:
-            # choose P classes; for binary ensure both 0 and 1 when possible
-            if set(all_classes) == {0, 1} and self.P >= 2:
+        for _ in range(self._steps):
+            # choose P classes; for binary ensure both if possible
+            if set(classes) == {0, 1} and self.P >= 2:
                 chosen = [0, 1]
                 if self.P > 2:
-                    extra = rng.choice(all_classes, size=self.P - 2, replace=True).tolist()
+                    extra = rng.choice(classes, size=self.P - 2, replace=True).tolist()
                     chosen += extra
             else:
-                chosen = rng.choice(all_classes, size=self.P, replace=True).tolist()
+                chosen = rng.choice(classes, size=self.P, replace=True).tolist()
 
-            # pull K per class, with wrap-around (acts like minority oversampling)
+            batch: List[int] = []
             for c in chosen:
-                for _ in range(self.K):
-                    if ptrs[c] >= len(idxs_by_class[c]):
-                        idxs_by_class[c] = rng.permutation(idxs_by_class[c])
+                for _k in range(self.K):
+                    if ptrs[c] >= pools[c].size:
+                        pools[c] = rng.permutation(pools[c])
                         ptrs[c] = 0
-                    batch.append(int(idxs_by_class[c][ptrs[c]]))
+                    batch.append(int(pools[c][ptrs[c]]))
                     ptrs[c] += 1
 
-            if len(batch) == self.P * self.K:
-                yield batch
-                batch = []
-            else:
-                break
-
-    def __len__(self):
-        # approximate batches per epoch
-        n = len(self.labels)
-        bsz = self.P * self.K
-        return (n // bsz) if self.drop_last else int(np.ceil(n / bsz))
+            yield batch

@@ -9,20 +9,25 @@
 #     --epochs 2 --limit_train 2048 \
 #     --image_size 224 --batch_p 4 --batch_k 4 \
 #     --pretrained --freeze_backbone --num_workers 0
+# train.py — Step 8 (checkpointing + best selection + final report)
 
 from __future__ import annotations
 import argparse, json, time
 from pathlib import Path
 
+import numpy as np
 import torch
 from torch import optim
 from torch.utils.data import DataLoader, Subset
+import torch.multiprocessing as mp
+mp.set_sharing_strategy("file_system")
 
 from dataset import ISIC2020Dataset, PKSampler
 from modules import SiameseEncoder
 from losses import TripletLoss
 from utils import (
-    embed_dataset, evaluate_prototypes, plot_training_curves, plot_val_curves
+    embed_dataset, evaluate_prototypes, plot_training_curves, plot_val_curves,
+    compute_prototypes, score_by_prototypes, save_config
 )
 
 
@@ -32,11 +37,11 @@ def parse_args():
     ap.add_argument("--val_csv",   required=True, type=str)
     ap.add_argument("--out_dir",   required=True, type=str)
 
-    ap.add_argument("--epochs", type=int, default=2)
+    ap.add_argument("--epochs", type=int, default=5)
     ap.add_argument("--image_size", type=int, default=320)
     ap.add_argument("--batch_p", type=int, default=8)
     ap.add_argument("--batch_k", type=int, default=4)
-    ap.add_argument("--val_batch", type=int, default=64, help="plain batch size for val embed pass")
+    ap.add_argument("--val_batch", type=int, default=64)
     ap.add_argument("--num_workers", type=int, default=2)
 
     ap.add_argument("--lr", type=float, default=1e-4)
@@ -48,6 +53,11 @@ def parse_args():
     ap.add_argument("--margin", type=float, default=0.3)
     ap.add_argument("--seed", type=int, default=1337)
     ap.add_argument("--limit_train", type=int, default=0)
+    ap.add_argument("--limit_val", type=int, default=0, help="limit val set size for fast smoke runs (0=all)")
+
+    # NEW: early stop / patience
+    ap.add_argument("--early_stop", action="store_true", help="enable early stop on val AUC")
+    ap.add_argument("--patience", type=int, default=3, help="epochs without AUC improvement")
     return ap.parse_args()
 
 
@@ -58,8 +68,12 @@ def set_seed(seed: int):
     torch.backends.cudnn.benchmark = True
 
 
-def make_val_loader(csv_path: str, image_size: int, batch_size: int, num_workers: int) -> DataLoader:
+def make_val_loader(csv_path: str, image_size: int, batch_size: int, num_workers: int, limit_val: int = 0) -> DataLoader:
     ds = ISIC2020Dataset(csv_path, image_size=image_size, mode="val")
+    if limit_val and limit_val > 0:
+        from torch.utils.data import Subset
+        idx = torch.arange(min(len(ds), limit_val))
+        ds = Subset(ds, idx.tolist())
     return DataLoader(
         ds, batch_size=batch_size, shuffle=False,
         num_workers=num_workers, pin_memory=True
@@ -77,7 +91,6 @@ def main():
     print(f"[info] device: {device}")
 
     # -------- Datasets & Loaders --------
-    # Train
     train_ds = ISIC2020Dataset(args.train_csv, image_size=args.image_size, mode="train")
     if args.limit_train and args.limit_train > 0:
         idx = torch.randperm(len(train_ds))[: args.limit_train]
@@ -95,9 +108,9 @@ def main():
         num_workers=args.num_workers, pin_memory=(device.type == "cuda"),
     )
 
-    # Val (plain sequential batching)
-    val_loader = make_val_loader(args.val_csv, args.image_size, args.val_batch, args.num_workers)
-
+    val_loader = make_val_loader(
+        args.val_csv, args.image_size, args.val_batch, args.num_workers, limit_val=args.limit_val
+    )
     # -------- Model, Loss, Optim --------
     model = SiameseEncoder(
         embedding_dim=args.embed_dim,
@@ -109,9 +122,32 @@ def main():
     optimzr = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scaler = torch.cuda.amp.GradScaler(enabled=(args.amp and device.type == "cuda"))
 
-    # -------- Training + Validation --------
+    # -------- History / Best tracking --------
     history = {"epoch": [], "train_loss": [], "val_auc": [], "val_ap": [], "val_acc": [], "val_thr": []}
+    best_auc, best_epoch = -1.0, -1
+    bad_epochs = 0
+    best_path = out_dir / "best.pt"
 
+    # Save a simple config snapshot once
+    cfg = {
+        "train_csv": args.train_csv,
+        "val_csv": args.val_csv,
+        "image_size": args.image_size,
+        "embed_dim": args.embed_dim,
+        "margin": args.margin,
+        "batch_p": args.batch_p,
+        "batch_k": args.batch_k,
+        "lr": args.lr,
+        "weight_decay": args.weight_decay,
+        "pretrained": args.pretrained,
+        "freeze_backbone": args.freeze_backbone,
+        "amp": args.amp,
+        "seed": args.seed,
+    }
+    with open(out_dir / "config.json", "w") as f:
+        json.dump(cfg, f, indent=2)
+
+    # -------- Training + Validation --------
     for epoch in range(1, args.epochs + 1):
         # ---- train ----
         model.train()
@@ -152,7 +188,7 @@ def main():
         print(f"[epoch {epoch}] val_auc={eval_res.auc:.4f}  val_ap={eval_res.ap:.4f}  "
               f"val_acc={eval_res.acc:.4f}  thr={eval_res.thr:.3f}  counts={eval_res.counts}")
 
-        # Persist curves & history
+        # Update history
         history["epoch"].append(epoch)
         history["train_loss"].append(epoch_loss)
         history["val_auc"].append(eval_res.auc)
@@ -163,8 +199,7 @@ def main():
         with open(out_dir / "training_history.json", "w") as f:
             json.dump(history, f, indent=2)
 
-        # Save ROC/PR curves of this epoch
-        # (Re-embed to get scores for plotting)
+        # Save curves (also store epoch ROC/PR)
         with torch.no_grad():
             emb, lab = embed_dataset(model, val_loader, device)
             emb = emb / (np.linalg.norm(emb, axis=1, keepdims=True) + 1e-9)
@@ -173,11 +208,38 @@ def main():
         plot_training_curves(history, out_dir / "training_curves.png")
         plot_val_curves(lab, score, out_dir)
 
-    print(f"[done] wrote history → {out_dir/'training_history.json'}  & plots → {out_dir}")
+        # ---- checkpoint on AUC improvement ----
+        if eval_res.auc > best_auc:
+            best_auc, best_epoch = eval_res.auc, epoch
+            bad_epochs = 0
+            torch.save({"model": model.state_dict()}, best_path)
+            print(f"[epoch {epoch}] ↑ best AUC {best_auc:.4f} — saved {best_path.name}")
+        else:
+            bad_epochs += 1
+            if args.early_stop and bad_epochs >= args.patience:
+                print(f"[early stop] no AUC improvement for {bad_epochs} epochs (patience={args.patience})")
+                break
+
+    # -------- Final report: reload best.pt and evaluate once more --------
+    if best_path.exists():
+        ckpt = torch.load(best_path, map_location=device)
+        model.load_state_dict(ckpt["model"])
+        final_res = evaluate_prototypes(model, val_loader, device)
+        rep = (
+            f"best_epoch={best_epoch}\n"
+            f"val_auc={final_res.auc:.4f}\n"
+            f"val_ap={final_res.ap:.4f}\n"
+            f"val_acc={final_res.acc:.4f}\n"
+            f"thr={final_res.thr:.6f}\n"
+            f"class_counts={final_res.counts}\n"
+        )
+        (out_dir / "test_stats.txt").write_text(rep)
+        print("[final] wrote", (out_dir / "test_stats.txt").as_posix())
+    else:
+        print("[warn] best.pt not found; no final report generated")
+
+    print(f"[done] history → {out_dir/'training_history.json'}  best → {best_path if best_path.exists() else 'n/a'}")
 
 
 if __name__ == "__main__":
-    # numpy is used in val plotting; import here to keep top clean
-    import numpy as np
-    from utils import compute_prototypes, score_by_prototypes  # used in plotting block
     main()
