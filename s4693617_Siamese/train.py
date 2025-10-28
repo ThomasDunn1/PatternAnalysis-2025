@@ -19,7 +19,7 @@ import numpy as np
 import torch
 from torch import optim
 from torch.utils.data import DataLoader, Subset
-import torch.multiprocessing as mp
+import os, torch.multiprocessing as mp, platform
 mp.set_sharing_strategy("file_system")
 
 from dataset import ISIC2020Dataset, PKSampler
@@ -30,6 +30,10 @@ from utils import (
     compute_prototypes, score_by_prototypes, save_config
 )
 
+# Safety when on WSL
+def on_drvfs(path: str) -> bool:
+    # Heuristic: WSL Windows mount (e.g., /mnt/c, /mnt/d, /mnt/e)
+    return path.startswith("/mnt/")
 
 def parse_args():
     ap = argparse.ArgumentParser()
@@ -82,6 +86,10 @@ def make_val_loader(csv_path: str, image_size: int, batch_size: int, num_workers
 
 def main():
     args = parse_args()
+    train_on_drvfs = on_drvfs(os.path.abspath(args.train_csv)) or on_drvfs(os.path.abspath(args.out_dir))
+    safe_num_workers = 0 if train_on_drvfs else args.num_workers
+    pin = (torch.cuda.is_available() and not train_on_drvfs)
+
     set_seed(args.seed)
 
     out_dir = Path(args.out_dir)
@@ -103,14 +111,17 @@ def main():
             raise RuntimeError("Dataset must expose `labels` for PKSampler.")
 
     sampler = PKSampler(labels, batch_p=args.batch_p, batch_k=args.batch_k)
+    
     train_loader = DataLoader(
-        train_ds, batch_sampler=sampler,
-        num_workers=args.num_workers, pin_memory=(device.type == "cuda"),
+        train_ds,
+        batch_sampler=sampler,
+        num_workers=safe_num_workers,
+        pin_memory=pin,
+        persistent_workers=False,   # keep False on WSL/drvfs
     )
 
-    val_loader = make_val_loader(
-        args.val_csv, args.image_size, args.val_batch, args.num_workers, limit_val=args.limit_val
-    )
+    val_loader = make_val_loader(args.val_csv, args.image_size, args.val_batch, safe_num_workers, limit_val=args.limit_val)
+
     # -------- Model, Loss, Optim --------
     model = SiameseEncoder(
         embedding_dim=args.embed_dim,

@@ -49,7 +49,7 @@ Immediate:
 Prediction (predict.py)
 - Load best.pt, rebuild class prototypes from a support CSV (e.g., the val fold), and score any CSV (images only or with labels).
 - Output predictions.csv with image_path,score,pred[,label]; add optional TTA (flip/rotate) averaging.
-- Provide a minimal CLI with --ckpt --support_csv --pred_csv --out_csv [--tta].  
+- Provide a minimal CLI with --ckpt --suppoOk thankrt_csv --pred_csv --out_csv [--tta].  
 
 
 Future:
