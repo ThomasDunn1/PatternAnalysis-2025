@@ -12,7 +12,7 @@ This initial commit sets up the environment, directories, ignore rules, and depe
 - ✅ Dataset/dataloader (`dataset.py`)
 - ✅ Model modules (`modules.py`)
 - ✅ Losses modules (`losses.py`)
-- ☐ Training script (`train.py`)
+- ✅ Training script (`train.py`)
 - ☐ Prediction example (`predict.py`)
 
 ## Directory layout
@@ -44,7 +44,7 @@ Generated from visualise_batch.py:
 
 
 ## Next Steps
-Minimal Training Loop (train.py)
-- Wire DataLoader (+ PKSampler) → SiameseEncoder → TripletLoss → AdamW.
-- Add simple CLI args, optional AMP, and write a small JSON history (loss per epoch).
-- Sanity-run 1 epoch on a small subset to confirm stability and GPU utilization.
+Validation & Metrics Plotting
+- Add validate() building melanoma/non-melanoma prototypes and compute ROC-AUC / PR-AUC / accuracy (threshold sweep).
+- Save training_curves.png and val_metrics.png; write metrics into history JSON.
+- Aim for a quick 2–3 epoch run to confirm AUC > 0.5 on your folds.
