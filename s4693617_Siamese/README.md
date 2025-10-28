@@ -43,5 +43,9 @@ Generated from visualise_batch.py:
 
 
 ## Next Steps
-1. Add modules.py (pretrained backbone + projection head).
+1. Triplet Loss + Semi-hard Negative Mining
+    - Implement a TripletLoss class with margin ≈ 0.3 and Euclidean distance.
+    - Add semi-hard mining: choose negatives further than positives but within the margin.
+    - Verify numerical stability on a small synthetic batch (PKSampler + SiameseEncoder).
+    - Prepare for integration into train.py as the main loss.
 2. Implement metric loss & minimal train loop; then validation/plots/checkpoints.
