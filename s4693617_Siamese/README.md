@@ -14,7 +14,7 @@ This initial commit sets up the environment, directories, ignore rules, and depe
 - ☐ Prediction example (`predict.py`)
 
 ## Directory layout
-isic2020-snn/
+s4693617_Siamese/
 ├─ data/
 │ ├─ raw/ # Kaggle images & original CSVs
 │ └─ splits/ # generated patient-level split CSVs
