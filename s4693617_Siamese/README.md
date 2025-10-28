@@ -56,3 +56,7 @@ Future:
 - Fold Runner: --fold support and script to train/evaluate all 5 folds, write a metrics table.
 - Unfreeze & Schedules: staged fine-tune and LR scheduling to push accuracy toward ~0.8.
 - TTA / Ensembling (optional): small boosts for stability and final score.
+
+
+REAL=/data/ThomasData/ISIC/data/raw/train
+LINK=/home/mark/Thomas/COMP3710/PatternAnalysis-2025/s4693617_Siamese/data/raw/train
