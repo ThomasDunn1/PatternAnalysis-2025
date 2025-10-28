@@ -44,7 +44,7 @@ Generated from visualise_batch.py:
 
 
 ## Next Steps
-Validation & Metrics Plotting
-- Add validate() building melanoma/non-melanoma prototypes and compute ROC-AUC / PR-AUC / accuracy (threshold sweep).
-- Save training_curves.png and val_metrics.png; write metrics into history JSON.
-- Aim for a quick 2–3 epoch run to confirm AUC > 0.5 on your folds.
+Checkpointing & Best-Model Selection
+- Save best.pt whenever val_auc improves; persist config (backbone, embed_dim, image_size).
+- At end, reload best.pt and run a final eval on the val fold (placeholder for a future test set).
+- Write a test_stats.txt with metrics and the chosen threshold.
