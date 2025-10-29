@@ -37,8 +37,8 @@ def on_drvfs(path: str) -> bool:
 
 def parse_args():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--train_csv", required=True, type=str)
-    ap.add_argument("--val_csv",   required=True, type=str)
+    ap.add_argument("--train_csv", type=str, default=None)
+    ap.add_argument("--val_csv", type=str, default=None)
     ap.add_argument("--out_dir",   required=True, type=str)
 
     ap.add_argument("--epochs", type=int, default=5)
@@ -59,9 +59,12 @@ def parse_args():
     ap.add_argument("--limit_train", type=int, default=0)
     ap.add_argument("--limit_val", type=int, default=0, help="limit val set size for fast smoke runs (0=all)")
 
-    # NEW: early stop / patience
     ap.add_argument("--early_stop", action="store_true", help="enable early stop on val AUC")
     ap.add_argument("--patience", type=int, default=3, help="epochs without AUC improvement")
+    
+    ap.add_argument("--fold", type=int, default=None, help="if set, use train_fold{fold}.csv / val_fold{fold}.csv")
+    ap.add_argument("--splits_dir", type=str, default="data/splits", help="directory holding fold CSVs")
+
     return ap.parse_args()
 
 
@@ -86,7 +89,30 @@ def make_val_loader(csv_path: str, image_size: int, batch_size: int, num_workers
 
 def main():
     args = parse_args()
-    train_on_drvfs = on_drvfs(os.path.abspath(args.train_csv)) or on_drvfs(os.path.abspath(args.out_dir))
+    
+    splits_dir = Path(args.splits_dir)
+
+    def _auto_csvs():
+        if args.fold is None:
+            return args.train_csv, args.val_csv
+        tr = splits_dir / f"train_fold{args.fold}.csv"
+        va = splits_dir / f"val_fold{args.fold}.csv"
+        if not tr.exists() or not va.exists():
+            raise FileNotFoundError(f"Could not find fold CSVs: {tr} / {va}")
+        return str(tr), str(va)
+
+    # accept either: (A) --fold or (B) explicit CSVs
+    if args.fold is not None:
+        train_csv_resolved, val_csv_resolved = _auto_csvs()
+    elif args.train_csv is not None and args.val_csv is not None:
+        train_csv_resolved, val_csv_resolved = args.train_csv, args.val_csv
+    else:
+        raise ValueError("Either pass --fold (with --splits_dir) OR both --train_csv and --val_csv.")
+
+    print(f"[fold] using train={train_csv_resolved}  val={val_csv_resolved}")
+
+    
+    train_on_drvfs = on_drvfs(os.path.abspath(train_csv_resolved)) or on_drvfs(os.path.abspath(args.out_dir))
     safe_num_workers = 0 if train_on_drvfs else args.num_workers
     pin = (torch.cuda.is_available() and not train_on_drvfs)
 
@@ -99,7 +125,7 @@ def main():
     print(f"[info] device: {device}")
 
     # -------- Datasets & Loaders --------
-    train_ds = ISIC2020Dataset(args.train_csv, image_size=args.image_size, mode="train")
+    train_ds = ISIC2020Dataset(train_csv_resolved, image_size=args.image_size, mode="train")
     if args.limit_train and args.limit_train > 0:
         idx = torch.randperm(len(train_ds))[: args.limit_train]
         train_ds = Subset(train_ds, idx.tolist())
@@ -120,7 +146,7 @@ def main():
         persistent_workers=False,   # keep False on WSL/drvfs
     )
 
-    val_loader = make_val_loader(args.val_csv, args.image_size, args.val_batch, safe_num_workers, limit_val=args.limit_val)
+    val_loader = make_val_loader(val_csv_resolved, args.image_size, args.val_batch, safe_num_workers, limit_val=args.limit_val)
 
     # -------- Model, Loss, Optim --------
     model = SiameseEncoder(
@@ -141,8 +167,8 @@ def main():
 
     # Save a simple config snapshot once
     cfg = {
-        "train_csv": args.train_csv,
-        "val_csv": args.val_csv,
+        "train_csv": train_csv_resolved,
+        "val_csv": train_csv_resolved,
         "image_size": args.image_size,
         "embed_dim": args.embed_dim,
         "margin": args.margin,

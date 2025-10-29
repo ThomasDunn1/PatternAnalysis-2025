@@ -13,7 +13,13 @@ This initial commit sets up the environment, directories, ignore rules, and depe
 - ✅ Model modules (`modules.py`)
 - ✅ Losses modules (`losses.py`)
 - ✅ Training script (`train.py`)
-- ☐ Prediction example (`predict.py`)
+- ✅ Prediction example (`predict.py`)
+
+New goals: 
+- ☐ Finalise final report (run all 5 folds)
+- ☐ Accuracy tweaks
+- ☐ Stability Boost
+- ☐ Complete README report
 
 ## Directory layout
 s4693617_Siamese/  
@@ -45,18 +51,8 @@ Generated from visualise_batch.py:
 
 ## Next Steps
 Immediate: 
-
-Prediction (predict.py)
-- Load best.pt, rebuild class prototypes from a support CSV (e.g., the val fold), and score any CSV (images only or with labels).
-- Output predictions.csv with image_path,score,pred[,label]; add optional TTA (flip/rotate) averaging.
-- Provide a minimal CLI with --ckpt --suppoOk thankrt_csv --pred_csv --out_csv [--tta].  
-
+Run a test with fold runner, determine accuracy.
 
 Future:
-- Fold Runner: --fold support and script to train/evaluate all 5 folds, write a metrics table.
 - Unfreeze & Schedules: staged fine-tune and LR scheduling to push accuracy toward ~0.8.
 - TTA / Ensembling (optional): small boosts for stability and final score.
-
-
-REAL=/data/ThomasData/ISIC/data/raw/train
-LINK=/home/mark/Thomas/COMP3710/PatternAnalysis-2025/s4693617_Siamese/data/raw/train
