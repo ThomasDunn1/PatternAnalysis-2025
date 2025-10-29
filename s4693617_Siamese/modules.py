@@ -70,3 +70,16 @@ class SiameseEncoder(nn.Module):
         feats = self.backbone(x)  # [B, 2048, 1, 1]
         z = self.head(feats)      # [B, embedding_dim], L2-normalized
         return z
+
+    def param_groups(self, backbone_lr: float, head_lr: float, weight_decay: float):
+        """Two parameter groups: backbone and projection head."""
+        bb = []
+        hd = []
+        for n, p in self.named_parameters():
+            if not p.requires_grad:
+                continue
+            (bb if "backbone" in n else hd).append(p)
+        return [
+            {"params": bb, "lr": backbone_lr, "weight_decay": weight_decay},
+            {"params": hd, "lr": head_lr, "weight_decay": weight_decay},
+        ]

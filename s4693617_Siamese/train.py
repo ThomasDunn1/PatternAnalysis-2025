@@ -71,6 +71,32 @@ def set_seed(seed: int):
     random.seed(seed); np.random.seed(seed)
     torch.backends.cudnn.benchmark = True
 
+# --- LR scheduler helpers ---
+from torch import optim as _optim
+from torch.optim.lr_scheduler import CosineAnnealingLR, SequentialLR, LinearLR
+
+def make_cosine(opt, total_epochs: int, steps_per_epoch: int, warmup_epochs: int = 0):
+    """Cosine annealing per-step with optional linear warmup."""
+    total_steps = total_epochs * max(steps_per_epoch, 1)
+    main = CosineAnnealingLR(opt, T_max=total_steps)
+    if warmup_epochs > 0:
+        warm_steps = warmup_epochs * max(steps_per_epoch, 1)
+        warm = LinearLR(opt, start_factor=0.01, end_factor=1.0, total_iters=warm_steps)
+        return SequentialLR(opt, schedulers=[warm, main], milestones=[warm_steps])
+    return main
+
+def make_onecycle(opt, steps_per_epoch: int, epochs: int,
+                  max_lr: float, bb_scale: float, final_div: float):
+    """OneCycle for two param groups: [backbone, head]."""
+    max_lrs = [max_lr * bb_scale, max_lr]   # group 0=backbone, group 1=head
+    return _optim.lr_scheduler.OneCycleLR(
+        opt, max_lr=max_lrs,
+        steps_per_epoch=max(steps_per_epoch, 1),
+        epochs=epochs, pct_start=0.1, anneal_strategy="cos",
+        div_factor=final_div, final_div_factor=1.0,
+    )
+
+
 # -------------------- args --------------------
 
 def parse_args():
@@ -118,6 +144,30 @@ def parse_args():
                     help="path to rolling log file ('' disables)")
     ap.add_argument("--plots_at_end", action="store_true",
                     help="after training only: embed val once to produce plots safely")
+
+
+    # staged unfreeze
+    ap.add_argument("--unfreeze_epoch", type=int, default=1,
+                    help="epoch number (1-indexed) at which to unfreeze the backbone")
+    ap.add_argument("--head_lr", type=float, default=1e-3)
+    ap.add_argument("--backbone_lr", type=float, default=1e-4)
+
+    # scheduler
+    ap.add_argument("--scheduler", type=str, default="cosine",
+                    choices=["none","cosine","onecycle"])
+    ap.add_argument("--warmup_epochs", type=int, default=0,
+                    help="for cosine: linear warmup epochs before cosine decay")
+    ap.add_argument("--max_lr", type=float, default=1e-3,
+                    help="for onecycle: peak LR applied to head group; backbone uses scaled value")
+    ap.add_argument("--final_div_factor", type=float, default=1e3,
+                    help="for onecycle: initial lr = max_lr/final_div_factor")
+    ap.add_argument("--backbone_lr_scale", type=float, default=0.25,
+                    help="for onecycle: backbone peak LR = max_lr * backbone_lr_scale")
+
+    # misc stabilizers
+    ap.add_argument("--grad_clip", type=float, default=1.0,
+                    help="clip global grad norm (0 disables)")
+
 
     return ap.parse_args()
 
@@ -199,13 +249,13 @@ def main():
         pin_memory=pin,
         persistent_workers=persistent,
     )
-
+    
     val_loader = make_val_loader(
         val_csv_resolved, args.image_size, args.val_batch,
         safe_num_workers, args.limit_val, pin, persistent
     )
 
-    # ---------------- model / optim ----------------
+    # ---------------- model ----------------
     model = SiameseEncoder(
         embedding_dim=args.embed_dim,
         pretrained=args.pretrained,
@@ -213,8 +263,25 @@ def main():
     ).to(device)
 
     lossfn = TripletLoss(margin=args.margin, metric="euclidean")
-    optimzr = optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scaler = torch.cuda.amp.GradScaler(enabled=(args.amp and device.type == "cuda"))
+
+    # ---- optimizer (phase 1: maybe-frozen backbone) ----
+    if args.freeze_backbone:
+        for p in model.backbone.parameters():
+            p.requires_grad = False
+
+    opt = optim.AdamW(
+        model.param_groups(backbone_lr=args.backbone_lr, head_lr=args.head_lr, weight_decay=args.weight_decay)
+    )
+
+    # ---------------- Scheduler ----------------
+    steps_per_epoch = len(train_loader)
+    sched = None
+    if args.scheduler == "cosine":
+        sched = make_cosine(opt, args.epochs, steps_per_epoch, warmup_epochs=args.warmup_epochs)
+    elif args.scheduler == "onecycle":
+        sched = make_onecycle(opt, steps_per_epoch, args.epochs,
+                            args.max_lr, args.backbone_lr_scale, args.final_div_factor)
 
     # ---------------- bookkeeping ----------------
     history = {"epoch": [], "train_loss": [], "val_auc": [], "val_ap": [], "val_acc": [], "val_thr": []}
@@ -242,6 +309,28 @@ def main():
 
     # ---------------- epoch loop ----------------
     for epoch in range(1, args.epochs + 1):
+        # staged unfreeze
+        if args.unfreeze_epoch and epoch >= args.unfreeze_epoch:
+            # ensure backbone is trainable
+            for p in model.backbone.parameters():
+                p.requires_grad = True
+            # (re)build optimizer so the backbone group is included with proper LR
+            opt = optim.AdamW(
+                model.param_groups(backbone_lr=args.backbone_lr, head_lr=args.head_lr, weight_decay=args.weight_decay)
+            )
+            # rebuild scheduler with remaining epochs if needed
+            steps_per_epoch = len(train_loader)
+            if args.scheduler == "cosine":
+                remaining = args.epochs - epoch + 1
+                sched = make_cosine(opt, remaining, steps_per_epoch, warmup_epochs=0)
+            elif args.scheduler == "onecycle":
+                remaining = args.epochs - epoch + 1
+                sched = make_onecycle(opt, steps_per_epoch, remaining,
+                                    args.max_lr, args.backbone_lr_scale, args.final_div_factor)
+            else:
+                sched = None
+
+
         # ---- train ----
         model.train()
         running, steps = 0.0, 0
@@ -253,19 +342,28 @@ def main():
             x = x.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
 
-            optimzr.zero_grad(set_to_none=True)
+            opt.zero_grad(set_to_none=True)
+
             if scaler.is_enabled():
                 with torch.cuda.amp.autocast():
                     z = model(x)
                     loss = lossfn(z, y)
                 scaler.scale(loss).backward()
-                scaler.step(optimzr)
-                scaler.update()
+                if args.grad_clip and args.grad_clip > 0:
+                    scaler.unscale_(opt)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+                scaler.step(opt); scaler.update()
             else:
                 z = model(x)
                 loss = lossfn(z, y)
-                loss.backward()
-                optimzr.step()
+                if args.grad_clip and args.grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+                loss.backward(); opt.step()
+                
+
+            if sched is not None:
+                sched.step()
+
 
             running += float(loss.detach().cpu())
             steps += 1
@@ -295,6 +393,12 @@ def main():
         history["val_acc"].append(eval_res.acc)
         history["val_thr"].append(eval_res.thr)
         (out_dir / "training_history.json").write_text(json.dumps(history, indent=2))
+
+        history.setdefault("lr_head", []).append(opt.param_groups[1]["lr"])
+        history.setdefault("lr_backbone", []).append(opt.param_groups[0]["lr"])
+        (out_dir / "training_history.json").write_text(json.dumps(history, indent=2))
+
+        
 
         # Checkpoint on AUC
         if eval_res.auc > best_auc:
