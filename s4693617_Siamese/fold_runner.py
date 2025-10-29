@@ -29,6 +29,12 @@ def parse_args():
     ap.add_argument("--amp", action="store_true")
     ap.add_argument("--early_stop", action="store_true")
     ap.add_argument("--patience", type=int, default=3)
+    ap.add_argument("--limit_train", type=int, default=4000)
+    ap.add_argument("--limit_val", type=int, default=2000)
+    ap.add_argument("--max_train_steps", type=int, default=64)
+    ap.add_argument("--plots_at_end", action="store_true")
+    ap.add_argument("--log_root", type=str, default="runs/folds_logs")
+
     return ap.parse_args()
 
 def read_test_stats(path: Path) -> dict:
@@ -68,6 +74,18 @@ def main():
             "--embed_dim", str(args.embed_dim),
             "--margin", str(args.margin),
         ]
+        cmd += [
+            "--limit_train", str(args.limit_train),
+            "--limit_val", str(args.limit_val),
+            "--max_train_steps", str(args.max_train_steps),
+        ]
+        if args.plots_at_end:
+            cmd.append("--plots_at_end")
+
+        # per-fold log file
+        log_file = Path(args.log_root) / f"fold{fold}" / "train.log"
+        cmd += ["--log_file", str(log_file)]
+        
         if args.pretrained: cmd.append("--pretrained")
         if args.freeze_backbone: cmd.append("--freeze_backbone")
         if args.amp: cmd.append("--amp")

@@ -16,7 +16,7 @@ This initial commit sets up the environment, directories, ignore rules, and depe
 - ✅ Prediction example (`predict.py`)
 
 New goals: 
-- ☐ Finalise final report (run all 5 folds)
+- ✅ Finalise final report (run all 5 folds) - smoke test of five folds run. Below improvements to be made before running final trainings (more epochs, num workers etc)
 - ☐ Accuracy tweaks
 - ☐ Stability Boost
 - ☐ Complete README report
@@ -51,8 +51,7 @@ Generated from visualise_batch.py:
 
 ## Next Steps
 Immediate: 
-Run a test with fold runner, determine accuracy.
+Unfreeze & LR schedules (perf pass): staged fine-tune (frozen → unfrozen backbone), cosine or OneCycle LR; target val ACC ≈ 0.8.
 
 Future:
-- Unfreeze & Schedules: staged fine-tune and LR scheduling to push accuracy toward ~0.8.
-- TTA / Ensembling (optional): small boosts for stability and final score.
+- TTA & fold-score ensembling: small robustness/metric gains; record final mean±std across folds in reports/folds.csv
