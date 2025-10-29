@@ -18,7 +18,7 @@ This initial commit sets up the environment, directories, ignore rules, and depe
 New goals: 
 - ✅ Finalise final report (run all 5 folds) - smoke test of five folds run. Below improvements to be made before running final trainings (more epochs, num workers etc)
 - ✅ Accuracy tweaks
-- ☐ Stability Boost
+- ✅ Stability Boost
 - ☐ Complete README report
 
 ## Directory layout
@@ -50,7 +50,4 @@ Generated from visualise_batch.py:
 
 
 ## Next Steps
-- TTA & fold-score ensembling: small robustness/metric gains; record final mean±std across folds in reports/folds.csv
-- Try OneCycle: --scheduler onecycle --max_lr 1e-3 --backbone_lr_scale 0.25.
-- For stability: --grad_clip 1.0, AMP on, image_size=320, batch_p×batch_k ≈ 32–64 samples/step.
-- Track lr_head/lr_backbone in training_history.json; plot later for diagnostics.
+Run with final settings and update README as the report!

@@ -104,17 +104,27 @@ def build_val_loader(csv_path: Path, image_size: int, batch_size: int, num_worke
 
 def parse_args():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ckpt", required=True, type=str)
-    ap.add_argument("--support_csv", required=True, type=str)
+    # allow one or more ckpts/support CSVs (same order/length)
+    ap.add_argument("--ckpt", action="append", required=True,
+                    help="one or more checkpoints to ensemble; pass multiple --ckpt ...")
+    ap.add_argument("--support_csv", action="append", required=True,
+                    help="one support CSV per ckpt (labels required); pass multiple --support_csv ...")
+
+    # prediction target
     ap.add_argument("--pred_csv", required=True, type=str)
-    ap.add_argument("--out_csv", required=True, type=str)
+    ap.add_argument("--out_csv",  required=True, type=str)
+
+    # runtime knobs
     ap.add_argument("--image_size", type=int, default=0)
-    ap.add_argument("--batch_size", type=int, default=256)        # bigger default on Linux
-    ap.add_argument("--num_workers", type=int, default=4)         # use workers now
+    ap.add_argument("--batch_size", type=int, default=256)
+    ap.add_argument("--num_workers", type=int, default=4)
     ap.add_argument("--tta", action="store_true")
-    ap.add_argument("--limit_support", type=int, default=0, help="cap support rows for quick smoke")
-    ap.add_argument("--limit_pred", type=int, default=0, help="cap pred rows for quick smoke")
+
+    # quick caps for smoke runs
+    ap.add_argument("--limit_support", type=int, default=0, help="cap support rows per ckpt (0=all)")
+    ap.add_argument("--limit_pred", type=int, default=0, help="cap pred rows (0=all)")
     return ap.parse_args()
+
 
 def _cap_csv(csv_path: Path, limit: int) -> Path:
     if not limit or limit <= 0:
@@ -127,59 +137,80 @@ def _cap_csv(csv_path: Path, limit: int) -> Path:
 
 def main():
     args = parse_args()
-    ckpt_path = Path(args.ckpt)
-    cfg = load_config_from_ckpt(ckpt_path)
 
-    # reconstruct model from config
-    embed_dim = int(cfg.get("embed_dim", 256))
-    pretrained = bool(cfg.get("pretrained", False))
-    freeze_bb  = bool(cfg.get("freeze_backbone", False))
-    image_size = int(args.image_size or cfg.get("image_size", 320))
+    # sanity on ensembles
+    assert len(args.ckpt) == len(args.support_csv), \
+        f"Need the same number of --ckpt ({len(args.ckpt)}) and --support_csv ({len(args.support_csv)}) entries."
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = SiameseEncoder(embedding_dim=embed_dim, pretrained=pretrained, freeze_backbone=freeze_bb).to(device)
-    state = torch.load(ckpt_path, map_location=device)
-    model.load_state_dict(state["model"], strict=True)
-    model.eval()
 
-    support_csv = Path(args.support_csv)
-    pred_csv    = Path(args.pred_csv)
-    # apply optional caps (for smoke)
-    support_csv = _cap_csv(support_csv, args.limit_support)
-    pred_csv    = _cap_csv(pred_csv, args.limit_pred)
+    # Prepare pred loader just once (shared across ensemble members)
+    pred_csv = Path(args.pred_csv)
+    pred_csv = _cap_csv(pred_csv, args.limit_pred)
+    # We’ll use the first ckpt’s config to decide image_size when args.image_size == 0
+    first_cfg = load_config_from_ckpt(Path(args.ckpt[0]))
+    image_size = int(args.image_size or first_cfg.get("image_size", 320))
+    pred_loader = build_val_loader(pred_csv, image_size, args.batch_size, args.num_workers)
+    pred_meta   = read_csv_keep_order(pred_csv)
 
-    # loaders (val-mode transforms)
-    support_csv = Path(args.support_csv)
-    pred_csv    = Path(args.pred_csv)
-    supp_loader = build_val_loader(support_csv, image_size, args.batch_size, args.num_workers)
-    pred_loader = build_val_loader(pred_csv,    image_size, args.batch_size, args.num_workers)
-
-    # embed support and build prototypes
-    supp_meta = read_csv_keep_order(support_csv)
-    supp_emb, supp_lab = embed_loader(model, supp_loader, device, tta=args.tta, desc="support")
-    # normalize embeddings
-    supp_emb = supp_emb / (np.linalg.norm(supp_emb, axis=1, keepdims=True) + 1e-9)
-
-    if supp_meta["labels"] is None:
-        raise ValueError("support_csv must include labels to build class prototypes.")
-    protos = compute_prototypes(supp_emb, np.asarray(supp_meta["labels"], dtype=int))
-
-    # embed pred set and score
-    pred_meta = read_csv_keep_order(pred_csv)
-    pred_emb, pred_lab = embed_loader(model, pred_loader, device, tta=args.tta, desc="predict")
-    pred_emb = pred_emb / (np.linalg.norm(pred_emb, axis=1, keepdims=True) + 1e-9)
-
-    scores = score_by_prototypes(pred_emb, protos)          # larger ⇒ more melanoma-like
-    preds  = (scores >= 0.0).astype(int)                    # default 0-threshold; caller can post-filter
-
-    # if pred labels exist, compute simple metrics & best threshold (same as training)
-    metrics_txt = None
+    # For metrics (if available), cache truth once
+    y_true = None
     if pred_meta["labels"] is not None:
-        from sklearn.metrics import roc_auc_score, average_precision_score, accuracy_score, roc_curve
         y_true = np.asarray(pred_meta["labels"], dtype=int)
+
+    # Accumulate scores from each model → mean at end
+    ensemble_scores: List[np.ndarray] = []
+
+    for i, (ckpt_str, supp_str) in enumerate(zip(args.ckpt, args.support_csv), start=1):
+        ckpt_path   = Path(ckpt_str)
+        support_csv = Path(supp_str)
+        support_csv = _cap_csv(support_csv, args.limit_support)
+
+        # Load per-ckpt config (so embed_dim, pretrained flag, etc. match that fold)
+        cfg         = load_config_from_ckpt(ckpt_path)
+        embed_dim   = int(cfg.get("embed_dim", 256))
+        pretrained  = bool(cfg.get("pretrained", False))
+        freeze_bb   = bool(cfg.get("freeze_backbone", False))
+        # If user didn’t force image_size, honor the first config only (already set)
+        # Different fold configs with different sizes are not supported together.
+
+        # Rebuild model and load weights
+        model = SiameseEncoder(
+            embedding_dim=embed_dim,
+            pretrained=pretrained,
+            freeze_backbone=freeze_bb
+        ).to(device)
+        state = torch.load(ckpt_path, map_location=device)
+        model.load_state_dict(state["model"], strict=True)
+        model.eval()
+
+        # Build support loader with the chosen image size
+        supp_loader = build_val_loader(support_csv, image_size, args.batch_size, args.num_workers)
+
+        # Embed support (TTA optional) and build prototypes
+        supp_meta = read_csv_keep_order(support_csv)
+        if supp_meta["labels"] is None:
+            raise ValueError(f"support_csv must include labels (needed for prototypes): {support_csv}")
+        supp_emb, _ = embed_loader(model, supp_loader, device, tta=args.tta, desc=f"support[{i}]")
+        supp_emb = supp_emb / (np.linalg.norm(supp_emb, axis=1, keepdims=True) + 1e-9)
+        protos   = compute_prototypes(supp_emb, np.asarray(supp_meta["labels"], dtype=int))
+
+        # Embed pred set (TTA optional) and score against this model's prototypes
+        pred_emb, _ = embed_loader(model, pred_loader, device, tta=args.tta, desc=f"predict[{i}]")
+        pred_emb = pred_emb / (np.linalg.norm(pred_emb, axis=1, keepdims=True) + 1e-9)
+        scores_i = score_by_prototypes(pred_emb, protos)  # larger ⇒ more melanoma-like
+        ensemble_scores.append(scores_i.astype(np.float32))
+
+    # Average scores across models
+    scores = np.mean(np.stack(ensemble_scores, axis=0), axis=0)
+    preds  = (scores >= 0.0).astype(int)  # default 0 threshold; user may post-threshold
+
+    # If truth present → compute metrics and best threshold (max balanced accuracy)
+    metrics_txt = None
+    if y_true is not None:
+        from sklearn.metrics import roc_auc_score, average_precision_score, accuracy_score, roc_curve
         auc = float(roc_auc_score(y_true, scores))
         ap  = float(average_precision_score(y_true, scores))
-        # pick threshold by max balanced accuracy
         fpr, tpr, thr = roc_curve(y_true, scores)
         acc_bal = (tpr + (1 - fpr)) / 2.0
         j = int(np.argmax(acc_bal))
@@ -188,7 +219,7 @@ def main():
         acc = float(accuracy_score(y_true, y_pred))
         metrics_txt = f"val_auc={auc:.4f}\nval_ap={ap:.4f}\nval_acc@thr*={acc:.4f}\nthr*={thr_star:.6f}\n"
 
-    # write predictions.csv
+    # Write predictions
     import pandas as pd
     out = Path(args.out_csv); out.parent.mkdir(parents=True, exist_ok=True)
     data = {
@@ -196,13 +227,15 @@ def main():
         "score": scores.astype(float),
         "pred": preds.astype(int),
     }
-    if pred_meta["labels"] is not None:
-        data["label"] = pred_meta["labels"]
+    if y_true is not None:
+        data["label"] = y_true.tolist()
     pd.DataFrame(data).to_csv(out, index=False)
     print(f"[done] wrote predictions → {out.as_posix()}")
+
     if metrics_txt:
         (out.parent / "pred_metrics.txt").write_text(metrics_txt)
         print("[metrics]\n" + metrics_txt)
+
 
 if __name__ == "__main__":
     # keep WSL safe
