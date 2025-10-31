@@ -5,19 +5,19 @@ This repo trains a Siamese-style model (pretrained CNN backbone + projection hea
 
 ## Directory layout
 s4693617_Siamese/  
-├── dataset.py              # ISIC2020Dataset + PKSampler
-├── modules.py              # SiameseEncoder (pretrained backbone + projection head)
-├── losses.py               # TripletLoss (+ semi-hard mining)
-├── train.py                # Training loop, validation, checkpointing, metrics, (safe) plots-at-end
-├── predict.py              # Prototype-based inference; TTA; multi-ckpt ensembling
-├── fold_runner.py          # Run all folds and aggregate metrics (CSV + summary)
-├── utils.py                # Embedding/eval helpers; plotting (ROC/PR/training curves)
-├── make_splits.py          # Patient-level stratified folds (K=5 by default)
-├── build_train_csv.py      # Build minimal train.csv (image_name,target,patient_id) from ISIC csv
-├── data/
-│   └── splits/             # train_fold{k}.csv, val_fold{k}.csv (generated)
-├── runs/                   # per-run artifacts (checkpoints, histories, logs, plots)
-└── reports/                # folds.csv (per-fold + mean±std), summary.txt, ensemble predictions
+├── dataset.py              # ISIC2020Dataset + PKSampler  
+├── modules.py              # SiameseEncoder (pretrained backbone + projection head)  
+├── losses.py               # TripletLoss (+ semi-hard mining)  
+├── train.py                # Training loop, validation, checkpointing, metrics, (safe) plots-at-end  
+├── predict.py              # Prototype-based inference; TTA; multi-ckpt ensembling  
+├── fold_runner.py          # Run all folds and aggregate metrics (CSV + summary)  
+├── utils.py                # Embedding/eval helpers; plotting (ROC/PR/training curves)  
+├── make_splits.py          # Patient-level stratified folds (K=5 by default)  
+├── build_train_csv.py      # Build minimal train.csv (image_name,target,patient_id) from ISIC csv  
+├── data/  
+│   └── splits/             # train_fold{k}.csv, val_fold{k}.csv (generated)  
+├── runs/                   # per-run artifacts (checkpoints, histories, logs, plots)  
+└── reports/                # folds.csv (per-fold + mean±std), summary.txt, ensemble predictions  
 
 
 ## Environment
@@ -37,14 +37,6 @@ At validation/inference:
 - Sweep thresholds to find the balanced-accuracy optimum; report AUC/AP/ACC.
 - Optionally TTA (flip/rotate) to stabilize predictions.
 - Optionally ensemble across fold checkpoints (average scores).
-
-## Sample Batch grid
-Generated from visualise_batch.py:
-
-<p align="center">
-  <img src="runs/sample_batch.png" width="320" alt="Sample batch (train transforms)">
-</p>
-<sub><em>Figure: 4×4 grid of augmented training images (patient-wise splits).</em></sub>
 
 ## Setup data
 Download the ground truth, duplicate image list and metadata (v2) from the ISIC 2020 website, and put them in the raw folder. Then:
@@ -117,20 +109,20 @@ Per fold metrics: see reports/folds.csv and reports/summary.txt
 Using above run command, got final results of:
 
 Folds summary: 
-folds: 0..4 
-AUC: 0.8697±0.0156 
-AP : 0.1170±0.0290 
-ACC: 0.7508±0.0487 
-Total counts: neg=31698 pos=578 
+folds: 0..4  
+AUC: 0.8697±0.0156  
+AP : 0.1170±0.0290  
+ACC: 0.7508±0.0487  
+Total counts: neg=31698 pos=578  
 
-Predict metrics:
-val_auc=0.8913 
-val_ap=0.1128 
-val_acc@thr*=0.7210 
-thr*=-0.019924
+Predict metrics: 
+val_auc=0.8913  
+val_ap=0.1128  
+val_acc@thr*=0.7210  
+thr*=-0.019924 
 
 
-This is higher than most recent run results (as commited), likely due to X, but unfortunately due to time constraints while training, could not go back to using those parameters (each training plus predictions of the 5 folds took ~7 hours).
+This is higher than most recent run results (as commited), likely due to the future trainings striving too much for accuracy, ultimately reducing the amount the model could adapt and reducing stability, but unfortunately due to time constraints while training, could not go back to using those parameters (each training plus predictions of the 5 folds took ~7 hours).
 
 Future work to improve the model and push toward 0.8 accuracy includes bigger inputs (e.g., 384/448) if VRAM allows while monitoring overfitting, batch shape tuning (maintaining 32–64 images/step) and color constancy pre-processing (more inline with dermoscopy-specific robustness).
 
