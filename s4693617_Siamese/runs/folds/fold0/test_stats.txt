@@ -1,0 +1,6 @@
+best_epoch=-1
+val_auc=0.8438
+val_ap=0.0997
+val_acc=0.6675
+thr=-0.022347
+class_counts={0: 6705, 1: 122}

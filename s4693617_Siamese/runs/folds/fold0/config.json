@@ -1,0 +1,15 @@
+{
+  "train_csv": "data/splits/train_fold0.csv",
+  "val_csv": "data/splits/val_fold0.csv",
+  "image_size": 320,
+  "embed_dim": 256,
+  "margin": 0.3,
+  "batch_p": 8,
+  "batch_k": 4,
+  "lr": 0.0001,
+  "weight_decay": 0.0001,
+  "pretrained": false,
+  "freeze_backbone": false,
+  "amp": false,
+  "seed": 1337
+}

@@ -1,0 +1,4 @@
+val_auc=0.8184
+val_ap=0.0643
+val_acc@thr*=0.6857
+thr*=0.002498

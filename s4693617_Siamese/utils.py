@@ -26,19 +26,36 @@ class EvalResult:
     counts: Dict[int, int]
 
 
+# utils.py
+
+import numpy as np
+import torch
+from tqdm import tqdm
+
 @torch.no_grad()
-def embed_dataset(model, loader: DataLoader, device: torch.device, progress_every: int = 50):
+def embed_dataset(model, loader, device, use_amp: bool = False):
+    """
+    Stream a loader once and return (embeddings[N, D], labels[N]).
+    If use_amp=True and CUDA is available, runs under autocast for speed/memory.
+    """
     model.eval()
     embs, labs = [], []
-    for i, (x, y, _) in enumerate(loader):
+    is_cuda = (device.type == "cuda")
+
+    it = tqdm(loader, desc="embed", total=len(loader), leave=False, dynamic_ncols=True)
+    for x, y, *_ in it:
         x = x.to(device, non_blocking=True)
-        z = model(x)
+        if use_amp and is_cuda:
+            # torch>=2.0 preferred API:
+            with torch.amp.autocast(device_type="cuda"):
+                z = model(x)
+        else:
+            z = model(x)
         embs.append(z.detach().cpu().numpy())
-        labs.append(y.detach().cpu().numpy())
-        if progress_every and (i + 1) % progress_every == 0:
-            print(f"[val] embedded {i+1} batches")
-    import numpy as _np
-    return _np.concatenate(embs, axis=0), _np.concatenate(labs, axis=0)
+        labs.append(y.detach().cpu().numpy() if torch.is_tensor(y) else np.asarray(y))
+
+    return np.concatenate(embs, axis=0), np.concatenate(labs, axis=0)
+
 
 
 def compute_prototypes(emb: np.ndarray, labels: np.ndarray) -> Dict[int, np.ndarray]:
